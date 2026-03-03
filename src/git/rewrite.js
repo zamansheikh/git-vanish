@@ -55,47 +55,35 @@ function cmdExists(name) {
 /* ─── working tree backup / restore ───────────────────────── */
 
 /**
- * Save the current on-disk copy of `fullPath` without touching the git index.
+ * Save the current on-disk content WITHOUT touching the git index or working
+ * tree (so filter-branch sees a perfectly clean repo).
  *
- * File      → Content is read into memory (a Buffer). Zero filesystem change,
- *             so the working tree stays clean for filter-branch.
- * Directory → Recursively copied to a temp directory OUTSIDE the repo
- *             so git is unaware of the copy.
+ * File      → Content read into a Buffer in memory. Zero filesystem change.
+ * Directory → Recursively copied to a temp dir OUTSIDE the repo (git never
+ *             sees it). Original stays in place until filter-branch deletes it.
  *
- * After saving we call `git rm -rf <path>` to stage the deletion and remove
- * the file from disk, giving filter-branch a clean working tree.
+ * After history rewriting, filter-branch's final "git checkout" removes the
+ * target from the working tree. restoreSaved() then writes it back.
  *
- * Returns a descriptor: { type, data } or null if path doesn't exist.
+ * Returns a descriptor { type, ... } or null if path doesn't exist on disk.
  */
-function saveAndStageRemoval(repoPath, filePath, onProgress) {
+function saveContent(repoPath, filePath, onProgress) {
   const fullPath = path.join(repoPath, filePath.replace(/\//g, path.sep).replace(/\/$/, ''));
 
   if (!fs.existsSync(fullPath)) return null;
 
   const stat = fs.statSync(fullPath);
 
-  let saved;
-
   if (stat.isDirectory()) {
-    // Copy directory to a temp location outside the repo
     const tmpDest = path.join(os.tmpdir(), `git-scrub-${Date.now()}-${path.basename(fullPath)}`);
     onProgress(chalk.gray(`  Saving directory copy → ${tmpDest}`));
     copyDirSync(fullPath, tmpDest);
-    saved = { type: 'dir', tmp: tmpDest, dest: fullPath };
-
+    return { type: 'dir', tmp: tmpDest, dest: fullPath };
   } else {
-    // Read file content into memory — no filesystem change
-    onProgress(chalk.gray(`  Saving file content in memory…`));
-    const content  = fs.readFileSync(fullPath);
-    const encoding = detectEncoding(fullPath);
-    saved = { type: 'file', content, encoding, dest: fullPath };
+    onProgress(chalk.gray(`  Reading file content into memory…`));
+    const content = fs.readFileSync(fullPath);
+    return { type: 'file', content, dest: fullPath };
   }
-
-  // Stage the deletion so filter-branch finds a clean working tree
-  onProgress(chalk.gray(`  Staging removal of "${filePath}" from working tree…`));
-  run(`git rm -rf "${filePath.replace(/\\/g, '/')}"`, repoPath, { failOk: true, silent: true });
-
-  return saved;
 }
 
 /**
@@ -138,16 +126,6 @@ function copyDirSync(src, dest) {
       fs.copyFileSync(s, d);
     }
   }
-}
-
-/** Decide whether to write back as utf8 string or raw Buffer */
-function detectEncoding(filePath) {
-  const textExts = new Set([
-    '.txt','.html','.htm','.css','.js','.ts','.jsx','.tsx','.json',
-    '.xml','.yaml','.yml','.md','.env','.sh','.bat','.ps1','.py',
-    '.rb','.go','.rs','.java','.c','.cpp','.h','.cs','.php','.sql',
-  ]);
-  return textExts.has(path.extname(filePath).toLowerCase()) ? 'utf8' : null;
 }
 
 /* ─── add to .gitignore ────────────────────────────────────── */
@@ -225,8 +203,9 @@ async function scrubFile(repoPath, filePath, onProgress = console.log) {
   // 1. Add to .gitignore FIRST (so restored copy is immediately untracked)
   const added = addToGitignore(repoPath, filePath);
 
-  // 2. Save working-tree content + stage removal (cleans working tree for filter-branch)
-  const saved = saveAndStageRemoval(repoPath, filePath, onProgress);
+  // 2. Save working-tree content WITHOUT touching the git index
+  //    (working tree stays perfectly clean for filter-branch)
+  const saved = saveContent(repoPath, filePath, onProgress);
 
   // 3. Rewrite history
   const hasFilterRepo = cmdExists('git-filter-repo');
