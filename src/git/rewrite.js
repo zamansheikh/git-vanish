@@ -75,7 +75,8 @@ async function rewriteWithFilterBranch(repoPath, filePath, onProgress) {
 
   // On Windows the index-filter command runs inside Git's sh.exe, so use
   // the POSIX command with forward slashes.
-  const indexFilter = `git rm --cached --ignore-unmatch "${gitPath}"`;
+  // Use -r so that directories (e.g. node_modules/) are removed recursively.
+  const indexFilter = `git rm -r --cached --ignore-unmatch "${gitPath}"`;
 
   run(
     `git filter-branch --force --index-filter "${indexFilter}" --prune-empty --tag-name-filter cat -- --all`,
@@ -111,9 +112,11 @@ function addToGitignore(repoPath, filePath) {
   let existing = '';
   if (fs.existsSync(ignorePath)) {
     existing = fs.readFileSync(ignorePath, 'utf8');
-    // Check if already present
-    const lines = existing.split('\n').map((l) => l.trim());
-    if (lines.includes(gitPath) || lines.includes('/' + gitPath)) {
+    // Check if already present (with or without leading slash, with or without trailing slash)
+    const lines   = existing.split('\n').map((l) => l.trim());
+    const base    = gitPath.replace(/\/$/, '');        // strip trailing slash
+    const checked = [base, base + '/', '/' + base, '/' + base + '/'];
+    if (checked.some((v) => lines.includes(v))) {
       return false; // already ignored
     }
   }
