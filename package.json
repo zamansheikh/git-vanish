@@ -1,15 +1,20 @@
 {
   "name": "git-scrub",
   "version": "1.0.0",
-  "description": "Interactively browse your repo and permanently remove sensitive files from all git commit history — without losing your other commits.",
+  "description": "Interactively browse your repo and permanently remove sensitive files from all git commit history — without losing your other commits. File data is preserved on disk as untracked.",
   "bin": {
     "git-scrub": "./bin/git-scrub.js"
   },
   "main": "./src/index.js",
   "scripts": {
-    "start": "node bin/git-scrub.js",
-    "lint": "eslint src/"
+    "start": "node bin/git-scrub.js"
   },
+  "files": [
+    "bin/",
+    "src/",
+    "README.md",
+    "LICENSE"
+  ],
   "keywords": [
     "git",
     "history",
@@ -21,10 +26,23 @@
     "sensitive",
     "purge",
     "cli",
-    "tui"
+    "tui",
+    "gitignore",
+    "security",
+    "leaked",
+    "api-key",
+    "password"
   ],
-  "author": "",
+  "author": "zamansheikh",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/zamansheikh/git-scrub.git"
+  },
+  "homepage": "https://github.com/zamansheikh/git-scrub#readme",
+  "bugs": {
+    "url": "https://github.com/zamansheikh/git-scrub/issues"
+  },
   "dependencies": {
     "chalk": "^4.1.2",
     "commander": "^11.1.0",

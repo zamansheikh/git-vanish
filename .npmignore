@@ -1,0 +1,21 @@
+# Development & test files
+test/
+test_scrub/
+*.test.js
+*.spec.js
+
+# Sensitive / local files
+secrets.env
+*.env
+.env*
+
+# Editor & OS
+.vscode/
+.idea/
+*.DS_Store
+Thumbs.db
+
+# Misc
+indext.html
+.eslintrc*
+.prettierrc*
