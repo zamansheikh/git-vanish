@@ -178,12 +178,17 @@ async function rewriteWithFilterBranch(repoPath, filePath, onProgress) {
 
 /* ─── cleanup ──────────────────────────────────────────────── */
 
-async function cleanup(repoPath, onProgress) {
+async function cleanup(repoPath, onProgress, { gc = true } = {}) {
   onProgress('Removing filter-branch backup refs…');
   // Remove all original/* refs
   const refs = run('git for-each-ref --format="%(refname)" refs/original/', repoPath, { silent: true, failOk: true });
   for (const ref of refs.split('\n').filter(Boolean)) {
     run(`git update-ref -d "${ref}"`, repoPath, { failOk: true, silent: true });
+  }
+
+  if (!gc) {
+    onProgress('Skipping garbage collection (--no-gc): old objects stay in .git until the next gc.');
+    return;
   }
 
   onProgress('Expiring reflogs…');
@@ -202,8 +207,9 @@ async function cleanup(repoPath, onProgress) {
  * @param {string}   repoPath   – absolute path to git repo root
  * @param {string}   filePath   – repo-relative path (e.g. "config/secrets.json")
  * @param {Function} onProgress – callback(message) for progress updates
+ * @param {{gc?: boolean}} options – gc: false skips reflog expiry + gc (--no-gc)
  */
-async function scrubFile(repoPath, filePath, onProgress = console.log) {
+async function scrubFile(repoPath, filePath, onProgress = console.log, { gc = true } = {}) {
   // 1. Save working-tree content WITHOUT touching the git index
   const saved = saveContent(repoPath, filePath, onProgress);
 
@@ -226,7 +232,7 @@ async function scrubFile(repoPath, filePath, onProgress = console.log) {
   }
 
   // 3. Cleanup reflogs + gc
-  await cleanup(repoPath, onProgress);
+  await cleanup(repoPath, onProgress, { gc });
 
   // 4. Restore working-tree copy (file is now untracked)
   if (saved) {

@@ -265,6 +265,23 @@ function captureRemotes(repoPath) {
   return [...seen.entries()].map(([name, url]) => ({ name, url }));
 }
 
+/**
+ * Re-add remotes that a filter-repo run removed. Only remotes that are now
+ * missing are added; nothing is fetched or pushed.
+ *
+ * @returns {{name: string, url: string}[]} the remotes that were re-added
+ */
+function restoreRemotes(repoPath, remotes) {
+  const restored = [];
+  for (const r of remotes || []) {
+    const exists = spawnSync('git', ['remote', 'get-url', r.name], { cwd: repoPath, stdio: 'pipe' }).status === 0;
+    if (exists) continue;
+    const add = spawnSync('git', ['remote', 'add', r.name, r.url], { cwd: repoPath, stdio: 'pipe' });
+    if (add.status === 0) restored.push(r);
+  }
+  return restored;
+}
+
 /** Escape a string for use inside a Python regular expression. */
 function reEscape(s) {
   return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -486,6 +503,7 @@ module.exports = {
   buildMappings,
   previewReassign,
   captureRemotes,
+  restoreRemotes,
   countFor,
   staleOnRemote,
   hasFilterRepo,

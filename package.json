@@ -1,6 +1,6 @@
 {
   "name": "git-vanish",
-  "version": "1.6.2",
+  "version": "1.7.0",
   "description": "Interactive terminal app to vanish sensitive files from all git commit history, redact a leaked secret from every commit, or reassign a contributor commits to someone else.",
   "bin": {
     "git-vanish": "bin/git-vanish.js"

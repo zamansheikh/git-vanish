@@ -69,6 +69,9 @@ git-vanish authors     # who is in history (read-only)
 | `-f, --file <path>` | Skip the browser — provide the file path directly |
 | `--dry-run`         | Preview what would happen, no changes made    |
 | `--no-gc`           | Skip the aggressive garbage collection step   |
+| `-y, --yes`         | Vanish `--file` without the confirmation screens (scripts, agents, no terminal) |
+| `--no-backup`       | With `--yes`: skip the backup bundle written before the rewrite |
+| `--restore-remotes` | After a non-interactive rewrite (vanish, redact, reassign), re-add the remotes `git-filter-repo` removed |
 | `-V, --version`     | Show version                                  |
 | `-h, --help`        | Show help                                     |
 
@@ -84,6 +87,12 @@ git-vanish --file config/secrets.json
 
 # Preview only (no changes)
 git-vanish --dry-run
+
+# Without a terminal (scripts, CI, AI agents): explicit consent with --yes.
+# Writes a backup bundle first, verifies the file is gone afterwards.
+git-vanish --file config/secrets.json --dry-run          # report only
+git-vanish --file config/secrets.json --yes              # do it
+git-vanish --file config/secrets.json --yes --restore-remotes   # and put origin back
 
 # Different repo
 git-vanish --repo /path/to/my-project
@@ -353,7 +362,11 @@ That is the whole undo story for an operation git itself cannot undo. Take it.
 
 ## After running
 
-You **must** force-push to update the remote:
+`git-filter-repo` removes your remotes so a bad rewrite cannot be pushed by
+accident. The interactive app offers to put them back; from flags, add
+`--restore-remotes` (or run the `git remote add …` line it prints).
+
+Then you **must** force-push to update the remote:
 
 ```bash
 git push origin --force --all

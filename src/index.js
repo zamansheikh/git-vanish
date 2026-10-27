@@ -21,10 +21,15 @@ const fs = require('fs');
 const chalk = require('chalk');
 const { program } = require('commander');
 
+const { spawnSync } = require('child_process');
+
 const { redactSecrets } = require('./git/redact');
 const {
-  reassignAuthors, listAuthors, parseMapping, captureRemotes, staleOnRemote,
+  reassignAuthors, listAuthors, parseMapping, captureRemotes, restoreRemotes, staleOnRemote,
 } = require('./git/reassign');
+const { scrubFile, addToGitignore } = require('./git/rewrite');
+const { findCommitsForFile } = require('./git/history');
+const { createBackupBundle, restoreHint } = require('./git/backup');
 const { runApp, vanishFlow, repoStats, dirtyFiles } = require('./ui/flows');
 
 /* ─── CLI setup ──────────────────────────────────────────── */
@@ -45,6 +50,11 @@ program
   .option('-f, --file <path>',  'Repo-relative file path to vanish (skip the browser)')
   .option('--no-gc',             'Skip the garbage collection step (faster, less thorough)')
   .option('--dry-run',           'Show what would happen without changing anything')
+  // Consent for scripts and agents. Without a terminal there are no review
+  // screens, so a rewrite only runs when the caller says so explicitly.
+  .option('-y, --yes',           'Vanish --file without the confirmation screens (scripts, no terminal)')
+  .option('--no-backup',         'With --yes: skip the backup bundle written before the rewrite')
+  .option('--restore-remotes',   'After a non-interactive rewrite, re-add the remotes git-filter-repo removed')
   // Redaction mode — for a secret embedded in a file you need to KEEP.
   // Removing the whole file would delete real source from every commit.
   .option(
@@ -118,9 +128,17 @@ function requireCleanTree(repoPath) {
   );
 }
 
-function printPublishSteps(remotes) {
+function printPublishSteps(remotes, restored = []) {
+  if (restored.length) {
+    const list = restored.map((r) => `${r.name} → ${r.url}`).join(', ');
+    console.log(chalk.green(`\n  ✓  Remote(s) restored: ${list}. Nothing has been pushed.`));
+    console.log(chalk.gray('  To publish this history:\n'));
+    console.log(chalk.cyan('    git push --force --all'));
+    console.log(chalk.cyan('    git push --force --tags\n'));
+    return;
+  }
   console.log(chalk.gray('\n  git-filter-repo removes remotes so a bad rewrite cannot be pushed by accident.'));
-  console.log(chalk.gray('  To publish this history:\n'));
+  console.log(chalk.gray('  To publish this history (or re-run with --restore-remotes):\n'));
   if (remotes && remotes.length) {
     for (const r of remotes) console.log(chalk.cyan(`    git remote add ${r.name} ${r.url}`));
   } else {
@@ -233,7 +251,7 @@ async function runReassign(repoPath) {
         '  Co-authored-by: trailers changed.'
       : '  Files, messages and dates are untouched — only the identity changed.'
   ));
-  printPublishSteps(result.remotes);
+  printPublishSteps(result.remotes, maybeRestoreRemotes(repoPath, result.remotes));
   console.log(chalk.gray('  Existing clones and forks keep the old identity until they re-clone.\n'));
 }
 
@@ -254,8 +272,95 @@ async function runRedact(repoPath, secrets) {
   if (!result.changed) return;
 
   console.log(chalk.green('\n  ✓  Secret(s) removed from every commit.\n'));
-  printPublishSteps(remotes);
+  printPublishSteps(remotes, maybeRestoreRemotes(repoPath, remotes));
   console.log(chalk.gray('  Everyone else must re-clone — their old clones still contain the secret.\n'));
+}
+
+/** --restore-remotes: put back what filter-repo removed. */
+function maybeRestoreRemotes(repoPath, remotes) {
+  return opts.restoreRemotes ? restoreRemotes(repoPath, remotes) : [];
+}
+
+/* ─── non-interactive: vanish ────────────────────────────── */
+
+/**
+ * The same steps as the interactive vanish wizard, for scripts and agents:
+ * scope report → backup bundle → rewrite → .gitignore → verify → publish
+ * steps. Runs only with --yes (or reports only, with --dry-run).
+ */
+async function runVanish(repoPath, files) {
+  if (!opts.yes && !opts.dryRun) {
+    die(
+      'Vanishing rewrites every commit, so it needs consent outside the interactive app.',
+      'Add --yes to run it, or --dry-run to see what it would do.'
+    );
+  }
+  requireCleanTree(repoPath);
+
+  const scanned = [];
+  for (const file of files) scanned.push({ file, commits: await findCommitsForFile(repoPath, file) });
+  const present = scanned.filter((s) => s.commits.length > 0);
+  const missing = scanned.filter((s) => s.commits.length === 0);
+
+  console.log(chalk.bold('\n Vanishing from all history:\n'));
+  for (const p of present) console.log(`   ${chalk.bold(p.file)}  ${chalk.gray(`${p.commits.length} commit(s)`)}`);
+  for (const m of missing) console.log(chalk.gray(`   ${m.file}  skipped: never committed`));
+  if (present.length === 0) {
+    console.log(chalk.gray('\n   Nothing to do — untracked files are already invisible to git.\n'));
+    return;
+  }
+
+  if (opts.dryRun) {
+    console.log(chalk.yellow('\n  Dry run — nothing was changed.'));
+    console.log(chalk.gray('  With --yes these files would be removed from every commit, kept on disk'));
+    console.log(chalk.gray('  as untracked files and added to .gitignore.\n'));
+    return;
+  }
+
+  const remotes = captureRemotes(repoPath);
+  let backup = null;
+  if (opts.backup !== false) {
+    backup = createBackupBundle(repoPath).path;
+    console.log(chalk.gray(`\n   Backup: ${backup}\n`));
+  }
+
+  const done = [];
+  for (const [i, p] of present.entries()) {
+    try {
+      const gc = opts.gc !== false && i === present.length - 1; // gc once, at the end
+      await scrubFile(repoPath, p.file, (msg) => console.log('   ' + msg), { gc });
+      done.push(p.file);
+    } catch (err) {
+      console.error(chalk.red(`\n ✘  Failed on "${p.file}": ${err.message}\n`));
+      if (backup) console.error(chalk.gray(`    Restore with:  ${restoreHint(backup)}\n`));
+      process.exitCode = 1;
+      break;
+    }
+  }
+  if (done.length === 0) return;
+
+  let added = 0;
+  for (const file of done) if (addToGitignore(repoPath, file)) added++;
+  if (added) {
+    spawnSync('git', ['add', '.gitignore'], { cwd: repoPath, stdio: 'pipe' });
+    spawnSync('git', ['commit', '-m', 'chore: ignore files removed from history [git-vanish]'],
+      { cwd: repoPath, stdio: 'pipe' });
+  }
+
+  // Verify: a rewrite that "succeeded" but left the file behind must not pass.
+  const leftover = [];
+  for (const file of done) if ((await findCommitsForFile(repoPath, file)).length) leftover.push(file);
+  if (leftover.length) {
+    die(`Still in history after the rewrite: ${leftover.join(', ')}`,
+      backup ? `Restore with:  ${restoreHint(backup)}` : undefined);
+  }
+
+  console.log(chalk.green(`\n  ✓  ${done.length} file(s) vanished from all git history.`));
+  console.log(chalk.gray('  Your copies are still on disk, now untracked' +
+    (added ? `; ${added} .gitignore entr${added === 1 ? 'y' : 'ies'} committed.` : '.')));
+  printPublishSteps(remotes, maybeRestoreRemotes(repoPath, remotes));
+  console.log(chalk.gray('  Collaborators must re-clone. Rotate any leaked credentials — hosts may have cached the old content.\n'));
+  if (backup) console.log(chalk.gray(`  Undo everything with:  ${restoreHint(backup)}\n`));
 }
 
 /* ─── main ───────────────────────────────────────────────── */
@@ -289,12 +394,24 @@ async function main() {
   ];
   if (secrets.length > 0) { banner(repoPath); return runRedact(repoPath, secrets); }
 
+  const hasTerminal = process.stdin.isTTY && process.stdout.isTTY;
+  const files = opts.file
+    ? opts.file.split(',').map((f) => f.trim().replace(/\\/g, '/')).filter(Boolean)
+    : null;
+
+  // Vanish without the wizard: explicit --yes (or --dry-run), or no terminal.
+  if (files && (opts.yes || opts.dryRun || !hasTerminal)) {
+    banner(repoPath);
+    return runVanish(repoPath, files);
+  }
+
   // ── Interactive from here on ──
 
-  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+  if (!hasTerminal) {
     die(
       'The interactive app needs a terminal.',
-      'Use the flags instead — see: git-vanish --help'
+      'Without one, use flags: --file <path> --yes (vanish), --secret (redact), ' +
+      '--reassign or --list-authors. See: git-vanish --help'
     );
   }
 
@@ -302,6 +419,7 @@ async function main() {
     repoPath,
     repoName: path.basename(repoPath),
     dryRun: !!opts.dryRun,
+    gc: opts.gc !== false,
     stats: repoStats(repoPath),
   };
 
@@ -312,7 +430,6 @@ async function main() {
     const ui = new Ui();
     ui.open();
     try {
-      const files = opts.file.split(',').map((f) => f.trim().replace(/\\/g, '/')).filter(Boolean);
       await vanishFlow(ui, ctx, files);
     } finally {
       ui.close();

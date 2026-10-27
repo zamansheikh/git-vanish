@@ -26,7 +26,7 @@ const { Ui } = require('./ui');
 const { theme, G, fit } = require('./tui');
 const FileBrowser = require('./browser');
 
-const { getAllTrackedFiles, findCommitsForFile, getRemoteUrl } = require('../git/history');
+const { getAllTrackedFiles, findCommitsForFile } = require('../git/history');
 const { scrubFile, addToGitignore } = require('../git/rewrite');
 const { redactSecrets, maskSecret, countOccurrences } = require('../git/redact');
 const {
@@ -834,16 +834,19 @@ async function vanishFlow(ui, ctx, preselected) {
 
   await ui.suspend(async () => {
     const ora = require('ora');
-    const remoteUrl = await getRemoteUrl(ctx.repoPath);
+    // filter-repo removes remotes; remember them so they can be put back.
+    const remotes = captureRemotes(ctx.repoPath);
     const done = [];
 
     console.log('');
     if (backup) console.log(chalk.gray(` Backup: ${backup}\n`));
 
-    for (const { file } of present) {
+    for (const [i, { file }] of present.entries()) {
       const spinner = ora({ text: `Rewriting history for ${file}…`, color: 'red' }).start();
       try {
-        const result = await scrubFile(ctx.repoPath, file, (msg) => { spinner.text = chalk.gray(msg); });
+        // Garbage-collect once, after the last file (and never with --no-gc).
+        const gc = ctx.gc !== false && i === present.length - 1;
+        const result = await scrubFile(ctx.repoPath, file, (msg) => { spinner.text = chalk.gray(msg); }, { gc });
         spinner.succeed(chalk.green(`Vanished "${file}"  ${chalk.gray('[' + result.method + ']')}`));
         done.push(file);
       } catch (err) {
@@ -870,11 +873,11 @@ async function vanishFlow(ui, ctx, preselected) {
     console.log(chalk.green(`\n  ${G.check}  ${done.length} file(s) vanished from all git history.\n`));
     console.log(chalk.gray('  Your copies are still on disk with their latest content, now untracked.\n'));
 
-    console.log(chalk.bold.magenta('  📡 Force-push to clean the remote:\n'));
-    console.log(chalk.cyan('    git push origin --force --all'));
-    console.log(chalk.cyan('    git push origin --force --tags'));
-    if (remoteUrl) console.log(chalk.gray(`\n  Remote: ${remoteUrl}`));
-    console.log(chalk.gray('\n  Collaborators must re-clone, or: git fetch --all && git reset --hard origin/<branch>'));
+    // filter-repo removed the remotes, so "git push origin" would fail here:
+    // show the real publish steps and offer to put the remotes back.
+    printPublishSteps(remotes);
+    await offerRemoteRestore(ctx.repoPath, remotes);
+    console.log(chalk.gray('  Collaborators must re-clone, or: git fetch --all && git reset --hard origin/<branch>'));
     console.log(chalk.gray('  Rotate any leaked credentials — hosts may have cached the old content.\n'));
     if (backup) console.log(chalk.gray(`  Undo everything with:  ${restoreHint(backup)}\n`));
   });
