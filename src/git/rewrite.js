@@ -187,7 +187,8 @@ async function cleanup(repoPath, onProgress, { gc = true } = {}) {
   }
 
   if (!gc) {
-    onProgress('Skipping garbage collection (--no-gc): old objects stay in .git until the next gc.');
+    // Either --no-gc, or a batch where gc runs once after the last file.
+    onProgress('Skipping garbage collection for this file (it runs once at the end, or never with --no-gc).');
     return;
   }
 
